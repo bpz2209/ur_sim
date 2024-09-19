@@ -1,0 +1,5 @@
+# Build artifacts
+build/
+devel/
+
+.catkin_workspace

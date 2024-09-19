@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<launch>
+<!-- start ur5_bringup.launch -->
+<include file="$(find ur_gazebo)/launch/ur5_bringup.launch">
+</include>
+<!-- start move_group.launch -->
+<include file="$(find ur5_gripper_moveit_config)/launch/move_group.launch">
+</include>    
+<!-- start moveit rviz -->
+<include file="$(find ur5_gripper_moveit_config)/launch/moveit_rviz.launch">
+</include>
+
+</launch>
