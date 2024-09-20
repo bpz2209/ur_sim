@@ -4,7 +4,7 @@ Version: 1.0
 Autor: Julian Lin
 Date: 2024-09-20 00:09:48
 LastEditors: Julian Lin
-LastEditTime: 2024-09-20 03:42:15
+LastEditTime: 2024-09-20 04:23:19
 '''
 import sys
 import copy
@@ -174,10 +174,39 @@ class moveit_robot_arm_node:
 
     def gripper_control(self, state_):
         try:
-            print("============ Gripper control %s" % state_)
-            self.gripper_group.set_joint_value_target([state_])
-            self.gripper_group.go()
-            rospy.sleep(1)
+            # 获取当前抓取器的关节名称和当前关节值
+            joint_names = self.gripper_group.get_active_joints()
+            current_joint_values = self.gripper_group.get_current_joint_values()
+
+            print(f"Active gripper joints: {joint_names}")
+            print(f"Current gripper joint values: {current_joint_values}")
+
+            # 确保 'finger_joint' 存在于抓取器的关节列表中
+            if 'finger_joint' in joint_names:
+                # 获取 'finger_joint' 的索引
+                finger_joint_index = joint_names.index('finger_joint')
+
+                # 设置抓取器的目标值：0.0 表示完全打开，0.8 表示完全闭合（根据实际抓取器调整）
+                if state_ == 1:  # 完全闭合
+                    print("Closing gripper")
+                    joint_goal = [0.8]  # 完全闭合的目标值
+                elif state_ == 0:  # 完全打开
+                    print("Opening gripper")
+                    joint_goal = [0.0]  # 完全打开的目标值
+                else:
+                    rospy.logwarn("Invalid state for gripper control")
+                    return
+
+                # 设置 'finger_joint' 的目标值
+                current_joint_values[finger_joint_index] = joint_goal[0]
+
+                # 应用目标值
+                self.gripper_group.set_joint_value_target(current_joint_values)
+                self.gripper_group.go(wait=True)
+                self.gripper_group.stop()
+                rospy.sleep(1)
+            else:
+                rospy.logwarn("'finger_joint' not found in gripper joints")
         except Exception as e:
             rospy.logerr(f"Failed to control gripper: {str(e)}")
 
