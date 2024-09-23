@@ -1,15 +1,9 @@
-'''
-Description: 
-Version: 1.0
-Autor: Julian Lin
-Date: 2024-09-20 00:09:48
-LastEditors: Julian Lin
-LastEditTime: 2024-09-20 04:23:19
-'''
 import sys
 import copy
 import tty, termios, select
 import rospy
+import tf2_ros
+import tf2_geometry_msgs  # 用于进行坐标系的转换
 
 import moveit_commander
 from moveit_commander import RobotCommander, PlanningSceneInterface, MoveGroupCommander
@@ -23,6 +17,7 @@ display_msg = """
     w s: move forward/backward
     a d: move left/right
     q e: move up/down
+    j k: close/open the gripper
 
     Moving arm:
     1 2 3 4 5 6
@@ -35,7 +30,6 @@ key_mapping = {'w': (1, 0, 0), 's': (-1, 0, 0),
                'a': (0, 1, 0), 'd': (0, -1, 0),
                'q': (0, 0, 1), 'e': (0, 0, -1)}
 
-
 class moveit_robot_arm_node:
     def __init__(self, node_name_, planning_time_=5, tolerance_=0.001, max_velocity_=0.1, max_acceleration_=0.1):
         try:
@@ -46,6 +40,10 @@ class moveit_robot_arm_node:
             self.arm_group = MoveGroupCommander("manipulator")
             self.gripper_group = MoveGroupCommander("gripper")
             self.end_effector_link = self.arm_group.get_end_effector_link()
+
+            # 初始化 tf buffer 和 listener
+            self.tf_buffer = tf2_ros.Buffer()
+            self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
             
             # 规划设置
             self.arm_group.allow_replanning(True)
@@ -55,26 +53,12 @@ class moveit_robot_arm_node:
             self.arm_group.set_max_velocity_scaling_factor(max_velocity_)
             self.arm_group.set_max_acceleration_scaling_factor(max_acceleration_)
 
-            # 初始位姿设定（避免非法状态）
-            init_pose = PoseStamped()
-            init_pose.header.frame_id = self.robot.get_planning_frame()
-            init_pose.header.stamp = rospy.Time.now()
-            init_pose.pose.position.x = 0.4  # 确保在有效工作范围内
-            init_pose.pose.position.y = 0.0
-            init_pose.pose.position.z = 0.4
-            init_pose.pose.orientation.w = 1.0  # 朝向设为单位四元数
-            
-            # self.arm_group.set_pose_target(init_pose)
-            # self.arm_group.go(wait=True)
-            # rospy.sleep(1)
-
             self.state = self.robot.get_current_state()
-            # get the current pose of the end effector
             print("============ Current pose: %s" % self.arm_group.get_current_pose().pose)
             self.goal = PoseStamped()
             self.goal.pose = copy.deepcopy(self.arm_group.get_current_pose().pose)
             self.goal.header.stamp = rospy.Time.now()
-            self.goal.header.frame_id = self.robot.get_planning_frame()
+            self.goal.header.frame_id = "base_link"  # 设置参考坐标系为 base_link
 
             # 获取可用规划组的名称
             group_names = self.robot.get_group_names()
@@ -93,9 +77,12 @@ class moveit_robot_arm_node:
             print(self.robot.get_current_state())
             print("")
 
-            # 发布器
+            # pub
             self.display_trajectory_publisher = rospy.Publisher('/manipulator/display_planned_path', moveit_msgs.msg.DisplayTrajectory, queue_size=20)
             self.goal_publisher = rospy.Publisher('/manipulator/goal', PoseStamped, queue_size=20)
+
+            # sub
+            self.detect_goal_sub = rospy.Subscriber("/detect_goal", PoseStamped, self.realsense_direct_move_to_goal)
 
         except Exception as e:
             rospy.logerr(f"Initialization failed: {str(e)}")
@@ -114,19 +101,50 @@ class moveit_robot_arm_node:
             self.goal_publisher.publish(goal)
         except Exception as e:
             rospy.logerr(f"Failed to display goal: {str(e)}")
+    
+    # 从 d435_color_frame 的坐标系转换到 base_link 的坐标系
+    def realsense_direct_move_to_goal(self, pose_):
+        try:
+            # 执行 d435_color_frame 到 base_link 的坐标系转换
+            try:
+                transform = self.tf_buffer.lookup_transform("base_link", "d435_color_frame", rospy.Time(0), rospy.Duration(1.0))
+                transformed_goal = tf2_geometry_msgs.do_transform_pose(pose_, transform)
+            except Exception as e:
+                rospy.logerr(f"Failed to transform goal from d435_color_frame to base_link: {str(e)}")
+            self.direct_move_to_goal(transformed_goal)
+        except Exception as e:
+            rospy.logerr(f"Failed to realsense move to goal: {str(e)}")
 
+        
     def direct_move_to_goal(self, goal_pose_):
         try:
             print("============ Move to goal %s" % goal_pose_)
             self.goal = goal_pose_
-            self.arm_group.set_pose_target(self.goal)
+
+            # 执行 base_link 到 world 的坐标系转换
+            try:
+                transform = self.tf_buffer.lookup_transform("world", "base_link", rospy.Time(0), rospy.Duration(1.0))
+                transformed_goal = tf2_geometry_msgs.do_transform_pose(goal_pose_, transform)
+            except Exception as e:
+                rospy.logerr(f"Failed to transform goal from base_link to world: {str(e)}")
+                return
+
+            # 使用转换后的目标进行运动规划
+            self.arm_group.set_pose_target(transformed_goal)
 
             success = self.arm_group.go(wait=True)  # 添加了成功检测
-            if not success:
-                rospy.logwarn("Failed to move to the goal")
+                
             self.arm_group.stop()
             self.arm_group.clear_pose_targets()
-            rospy.sleep(1)
+            # 如果成功，显示规划路径
+            self.display_trajectory(self.arm_group.get_current_joint_values())
+            self.display_goal(self.goal)
+            # 执行完成 return True
+            if success:
+                return True
+            else:
+                rospy.logwarn("Failed to move to the goal")
+                return False
         except Exception as e:
             rospy.logerr(f"Failed to move to goal: {str(e)}")
 
@@ -152,7 +170,7 @@ class moveit_robot_arm_node:
 
                 arm_state = self.arm_group.get_current_pose().pose
                 goal_pose = PoseStamped()
-                goal_pose.header.frame_id = self.robot.get_planning_frame()
+                goal_pose.header.frame_id = "base_link"  # 设置为 base_link
                 goal_pose.header.stamp = rospy.Time.now()
                 goal_pose.pose.position.x = arm_state.position.x + x
                 goal_pose.pose.position.y = arm_state.position.y + y
@@ -174,33 +192,26 @@ class moveit_robot_arm_node:
 
     def gripper_control(self, state_):
         try:
-            # 获取当前抓取器的关节名称和当前关节值
             joint_names = self.gripper_group.get_active_joints()
             current_joint_values = self.gripper_group.get_current_joint_values()
 
             print(f"Active gripper joints: {joint_names}")
             print(f"Current gripper joint values: {current_joint_values}")
 
-            # 确保 'finger_joint' 存在于抓取器的关节列表中
             if 'finger_joint' in joint_names:
-                # 获取 'finger_joint' 的索引
                 finger_joint_index = joint_names.index('finger_joint')
 
-                # 设置抓取器的目标值：0.0 表示完全打开，0.8 表示完全闭合（根据实际抓取器调整）
                 if state_ == 1:  # 完全闭合
                     print("Closing gripper")
-                    joint_goal = [0.8]  # 完全闭合的目标值
+                    joint_goal = [0.8]
                 elif state_ == 0:  # 完全打开
                     print("Opening gripper")
-                    joint_goal = [0.0]  # 完全打开的目标值
+                    joint_goal = [0.0]
                 else:
                     rospy.logwarn("Invalid state for gripper control")
                     return
 
-                # 设置 'finger_joint' 的目标值
                 current_joint_values[finger_joint_index] = joint_goal[0]
-
-                # 应用目标值
                 self.gripper_group.set_joint_value_target(current_joint_values)
                 self.gripper_group.go(wait=True)
                 self.gripper_group.stop()
@@ -211,7 +222,6 @@ class moveit_robot_arm_node:
             rospy.logerr(f"Failed to control gripper: {str(e)}")
 
     def check_bounds(self, pose):
-        # 根据实际机械臂的工作空间设定边界值
         if pose.pose.position.x < -1.5 or pose.pose.position.x > 1.5:
             print("x %f" % pose.pose.position.x)
             return False
@@ -228,7 +238,14 @@ if __name__ == "__main__":
     try:
         node_name = "moveit_robot_arm_node"
         robot_arm = moveit_robot_arm_node(node_name)
-        robot_arm.keyboard_move()
+        # rospy.has_param
+        print("============ param is ", rospy.has_param("/ur_gazebo"))
+        debug = rospy.get_param("controller_debug")
+        print("============ arm_control_nodo debug is ", debug)
+        if debug == True:
+            robot_arm.keyboard_move()
+        else:
+            rospy.spin()
         moveit_commander.roscpp_shutdown()
         print("============ Python moveit_robot_arm_node shutdown")
     except rospy.ROSInterruptException:

@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<launch>
+    <param name="control_debug" value="false"/>
+    <param name="detect_debug" value="false"/>
+    <param name="api_key" value=""/>
+    <param name="url" value=""/>
+    <param name="model_name" value=""/>
+    
+    <node pkg="ur_gazebo" name="arm_controller" type="arm_control.py" output="screen"/>
+    <node pkg="ur_gazebo" name="arm_detector" type="detect.py" output="screen"/>
+
+</launch>
