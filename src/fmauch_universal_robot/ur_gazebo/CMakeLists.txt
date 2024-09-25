@@ -16,7 +16,7 @@ if (CATKIN_ENABLE_TESTING)
   roslaunch_add_file_check(tests/roslaunch_test_ur10e.xml)
   roslaunch_add_file_check(tests/roslaunch_test_ur16e.xml)
 endif()
-
+include_directories()
 install(DIRECTORY config launch urdf
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})
 
